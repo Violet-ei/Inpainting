@@ -5,7 +5,8 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from .image_utils import find_matching_file, list_images, save_image
+from .auto_mask import AutoMaskConfig, generate_auto_mask
+from .image_utils import find_matching_file, list_images, load_rgb, save_image
 from .pipeline import (
     DEFAULT_NEGATIVE_PROMPT,
     DEFAULT_PROMPT,
@@ -19,11 +20,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model_id", default="runwayml/stable-diffusion-inpainting")
     parser.add_argument("--lora_weights", default=None)
     parser.add_argument("--image", default=None, help="Single damaged image path.")
-    parser.add_argument("--mask", default=None, help="Single mask path.")
+    parser.add_argument("--mask", default=None, help="Optional single mask path.")
     parser.add_argument("--input_dir", default=None, help="Directory of damaged images.")
-    parser.add_argument("--mask_dir", default=None, help="Directory of masks for batch mode.")
+    parser.add_argument("--mask_dir", default=None, help="Optional directory of masks for batch mode.")
     parser.add_argument("--output", default=None, help="Single output file.")
     parser.add_argument("--output_dir", default="outputs/sd_lora")
+    parser.add_argument("--auto_mask_output", default=None, help="Optional path to save the generated mask in single-image mode.")
+    parser.add_argument("--auto_mask_output_dir", default=None, help="Optional directory to save generated masks in batch mode.")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--negative_prompt", default=DEFAULT_NEGATIVE_PROMPT)
     parser.add_argument("--steps", type=int, default=30)
@@ -35,16 +38,42 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_size", type=int, default=768)
     parser.add_argument("--no_preserve_unmasked", action="store_true")
     parser.add_argument("--blur_mask", type=float, default=0.0)
+    parser.add_argument("--auto_mask_sensitivity", type=float, default=1.15)
+    parser.add_argument("--auto_mask_dilate", type=int, default=5)
+    parser.add_argument("--auto_mask_blur", type=int, default=3)
+    parser.add_argument("--auto_mask_min_area", type=int, default=24)
+    parser.add_argument("--auto_mask_max_coverage", type=float, default=0.35)
     return parser.parse_args()
 
 
+def auto_mask_config_from_args(args: argparse.Namespace) -> AutoMaskConfig:
+    return AutoMaskConfig(
+        sensitivity=args.auto_mask_sensitivity,
+        dilate=args.auto_mask_dilate,
+        blur=args.auto_mask_blur,
+        min_area=args.auto_mask_min_area,
+        max_coverage=args.auto_mask_max_coverage,
+    )
+
+
+def prepare_mask(args: argparse.Namespace, image_path: str | Path):
+    if args.mask:
+        return args.mask
+    image = load_rgb(image_path)
+    mask = generate_auto_mask(image, auto_mask_config_from_args(args))
+    if args.auto_mask_output:
+        save_image(mask, args.auto_mask_output)
+    return mask
+
+
 def run_single(args: argparse.Namespace, inpainter: AncientPaintingInpainter) -> Path:
-    if args.image is None or args.mask is None:
-        raise ValueError("--image and --mask are required in single-image mode.")
+    if args.image is None:
+        raise ValueError("--image is required in single-image mode.")
     output = Path(args.output or Path(args.output_dir) / Path(args.image).name)
+    mask = prepare_mask(args, args.image)
     result = inpainter.restore(
         args.image,
-        args.mask,
+        mask,
         prompt=args.prompt,
         negative_prompt=args.negative_prompt,
         num_inference_steps=args.steps,
@@ -58,18 +87,24 @@ def run_single(args: argparse.Namespace, inpainter: AncientPaintingInpainter) ->
 
 
 def run_batch(args: argparse.Namespace, inpainter: AncientPaintingInpainter) -> list[Path]:
-    if args.input_dir is None or args.mask_dir is None:
-        raise ValueError("--input_dir and --mask_dir are required in batch mode.")
+    if args.input_dir is None:
+        raise ValueError("--input_dir is required in batch mode.")
     output_dir = Path(args.output_dir)
     written = []
     for image_path in tqdm(list_images(args.input_dir), desc="inpainting"):
-        mask_path = find_matching_file(args.mask_dir, image_path.stem)
-        if mask_path is None:
-            continue
+        mask_path = (
+            find_matching_file(args.mask_dir, image_path.stem)
+            if args.mask_dir is not None
+            else None
+        )
         local_args = argparse.Namespace(**vars(args))
         local_args.image = str(image_path)
-        local_args.mask = str(mask_path)
+        local_args.mask = str(mask_path) if mask_path is not None else None
         local_args.output = str(output_dir / image_path.name)
+        if mask_path is None and args.auto_mask_output_dir:
+            local_args.auto_mask_output = str(
+                Path(args.auto_mask_output_dir) / f"{image_path.stem}.png"
+            )
         written.append(run_single(local_args, inpainter))
     return written
 

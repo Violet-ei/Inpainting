@@ -25,8 +25,6 @@ def restore(
 ):
     if image is None:
         raise gr.Error("Please upload a damaged image.")
-    if mask is None:
-        raise gr.Error("Please upload a binary mask. White pixels are repaired.")
     return inpainter.restore(
         image=image,
         mask=mask,
@@ -45,7 +43,7 @@ with gr.Blocks(title="Ancient Painting Inpainting") as demo:
     gr.Markdown("# Ancient Painting Inpainting")
     with gr.Row():
         image = gr.Image(type="pil", label="Damaged image")
-        mask = gr.Image(type="pil", label="Mask, white means repair")
+        mask = gr.Image(type="pil", label="Optional mask")
         output = gr.Image(type="pil", label="Repaired image")
     prompt = gr.Textbox(value=DEFAULT_PROMPT, label="Prompt", lines=2)
     negative_prompt = gr.Textbox(

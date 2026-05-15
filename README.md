@@ -4,6 +4,7 @@
 
 主要能力：
 
+- 只输入一张破损图时，可以自动估计 mask 并生成完整修复图
 - 输入 `damaged image + mask`，输出 `repaired image`
 - 可以直接调用 Hugging Face 上的 inpainting 大模型
 - 可以训练古画风格 LoRA
@@ -31,6 +32,7 @@ Inpainting/
     image_utils.py
     pipeline.py
     infer_sd_lora.py
+    auto_mask.py
     make_damage.py
     datasets.py
     train_common.py
@@ -72,6 +74,7 @@ Inpainting/
 |---|---|
 | `src/pipeline.py` | 推理核心。封装 `StableDiffusionInpaintPipeline`，负责加载 Hugging Face inpainting 模型、加载 LoRA、处理 prompt、mask、seed，并输出修复图。主要类是 `AncientPaintingInpainter`。 |
 | `src/infer_sd_lora.py` | 命令行推理脚本。支持单张图片修复，也支持批量处理 `input_dir + mask_dir`。 |
+| `src/auto_mask.py` | 自动 mask 生成模块。只给一张破损图时，使用亮度异常、暗色污渍、白色划痕、局部边缘等图像处理规则估计需要修复的区域。 |
 | `src/train_lora.py` | 古画风格 LoRA 训练脚本。使用 `data/lora_train/images` 和 `data/lora_train/captions`，让模型学习古画纹理、纸张质感、笔触风格。 |
 | `src/train_inpaint_lora.py` | 成对修复微调脚本。使用 `data/train/clean`、`data/train/damaged`、`data/train/mask`。默认训练 LoRA；传入 `--train_mode full_unet` 时，可以微调整个 UNet。 |
 | `src/train_common.py` | 训练公共工具。负责加载 SD inpainting 组件、添加 LoRA、保存 LoRA 权重、保存完整模型、tokenize caption、设置随机种子等。 |
@@ -146,6 +149,28 @@ python -m src.make_damage --clean_dir raw/val_clean --output_root data --split v
 
 ## 推理
 
+### 只有一张破损图时自动修复
+
+如果没有 mask，推理脚本会先调用 `src.auto_mask` 自动估计受损区域，再把生成的 mask 送入 Stable Diffusion Inpainting。
+
+```bash
+python -m src.infer_sd_lora \
+  --image damaged.png \
+  --output outputs/sd_lora/damaged.png \
+  --auto_mask_output outputs/auto_mask/damaged_mask.png \
+  --lora_weights checkpoints/ancient_painting_lora
+```
+
+也可以只生成自动 mask，方便检查或手动修改：
+
+```bash
+python -m src.auto_mask \
+  --image damaged.png \
+  --output outputs/auto_mask/damaged_mask.png
+```
+
+自动 mask 适合明显的白色裂痕、划痕、暗色污渍和局部缺失。对复杂古画，手动修正 mask 通常会得到更稳定的修复效果。
+
 ### 单张图片修复
 
 ```bash
@@ -159,6 +184,18 @@ python -m src.infer_sd_lora \
 如果暂时没有训练好的 LoRA，可以去掉 `--lora_weights`，脚本会直接使用 Hugging Face 上的基础 inpainting 模型。
 
 ### 批量修复
+
+如果 `--mask_dir` 不提供，脚本会为每张输入图自动生成 mask：
+
+```bash
+python -m src.infer_sd_lora \
+  --input_dir data/val/damaged \
+  --output_dir outputs/sd_lora \
+  --auto_mask_output_dir outputs/auto_mask \
+  --lora_weights checkpoints/ancient_painting_lora
+```
+
+如果已经有 mask，使用下面的命令：
 
 ```bash
 python -m src.infer_sd_lora \
@@ -321,13 +358,15 @@ TORCH_DTYPE=auto
 
 Space 会暴露 `/restore` API。客户端调用示例：
 
+如果没有 mask，可以把 `mask` 设为 `None`，Space 会自动生成 mask。
+
 ```python
 from gradio_client import Client, handle_file
 
 client = Client("your-user/your-space")
 result = client.predict(
     image=handle_file("damaged.png"),
-    mask=handle_file("mask.png"),
+    mask=None,
     prompt="ancient Chinese painting, restore damaged areas, preserve original style",
     negative_prompt="modern style, blurry, watermark",
     steps=30,

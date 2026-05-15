@@ -8,6 +8,7 @@ from typing import Optional
 import torch
 from PIL import Image
 
+from .auto_mask import AutoMaskConfig, generate_auto_mask
 from .image_utils import (
     composite_prediction,
     ensure_same_size,
@@ -92,7 +93,7 @@ class AncientPaintingInpainter:
     def restore(
         self,
         image: Image.Image | str | Path,
-        mask: Image.Image | str | Path,
+        mask: Image.Image | str | Path | None = None,
         prompt: str = DEFAULT_PROMPT,
         negative_prompt: str = DEFAULT_NEGATIVE_PROMPT,
         num_inference_steps: int = 30,
@@ -101,18 +102,22 @@ class AncientPaintingInpainter:
         seed: Optional[int] = None,
         preserve_unmasked: bool = True,
         blur_mask: float = 0.0,
+        auto_mask_config: AutoMaskConfig | None = None,
     ) -> Image.Image:
         damaged = load_rgb(image) if isinstance(image, (str, Path)) else image.convert("RGB")
-        mask_image = load_mask(mask) if isinstance(mask, (str, Path)) else mask.convert("L")
         damaged = resize_to_multiple(
             damaged, multiple=8, max_size=self.config.max_size
         )
-        mask_image = resize_to_multiple(
-            mask_image,
-            multiple=8,
-            max_size=self.config.max_size,
-            resample=Image.Resampling.NEAREST,
-        )
+        if mask is None:
+            mask_image = generate_auto_mask(damaged, auto_mask_config)
+        else:
+            mask_image = load_mask(mask) if isinstance(mask, (str, Path)) else mask.convert("L")
+            mask_image = resize_to_multiple(
+                mask_image,
+                multiple=8,
+                max_size=self.config.max_size,
+                resample=Image.Resampling.NEAREST,
+            )
         damaged, mask_image = ensure_same_size(damaged, mask_image)
 
         pipe = self.load()
