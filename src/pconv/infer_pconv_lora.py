@@ -42,6 +42,8 @@ def checkpoint_args(path: str | Path | None) -> dict:
 
 
 def build_model(args: argparse.Namespace, device: torch.device) -> PConvUNet:
+    if args.checkpoint is None and args.pretrained_pconv is None:
+        raise ValueError("Provide --checkpoint for PConv-LoRA or --pretrained_pconv for baseline PConv inference.")
     ckpt_args = checkpoint_args(args.checkpoint)
     rank = int(ckpt_args.get("rank", args.rank))
     alpha = ckpt_args.get("lora_alpha", args.lora_alpha)

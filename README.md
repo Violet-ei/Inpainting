@@ -1,6 +1,6 @@
 # 古画图像修复项目
 
-本项目实现一个基于 Stable Diffusion Inpainting 的古画修复系统。模型输入受损图片和二值 mask，输出修复后的图片；同时支持使用 LoRA 进行古画风格微调，也支持使用 `clean/damaged/mask` 成对数据继续微调修复模型。
+本项目实现一个古画图像修复实验系统。主方法使用 Stable Diffusion Inpainting + 古画风格 LoRA，baseline 使用 Partial Convolution（PConv）/ PConv-LoRA。模型可以输入受损图片和 mask 输出修复图；在没有 mask 时，也可以先自动估计 mask，再进行修复。
 
 主要能力：
 
@@ -10,6 +10,7 @@
 - 可以训练古画风格 LoRA
 - 可以使用成对数据训练修复 LoRA
 - 可以根据模型输出和原图构造二阶段 refine 数据
+- 可以运行 PConv/PConv-LoRA baseline，与 SD-LoRA 做指标和可视化对比
 - 可以部署为 Hugging Face Gradio Space，并通过 API 调用
 
 mask 约定：
@@ -32,6 +33,7 @@ Inpainting/
     image_utils.py
     pipeline.py
     infer_sd_lora.py
+    tile_infer.py
     auto_mask.py
     make_damage.py
     datasets.py
@@ -41,6 +43,16 @@ Inpainting/
     build_refine_dataset.py
     metrics.py
     hesclip_lora.py
+    pconv/
+      __init__.py
+      partialconv2d.py
+      pconv_unet.py
+      lora_conv.py
+      datasets.py
+      train_pconv_lora.py
+      infer_pconv_lora.py
+      tile_pconv.py
+      utils.py
   data/
     lora_train/
       images/
@@ -55,6 +67,9 @@ Inpainting/
       mask/
   checkpoints/
   outputs/
+  test/
+    img_inpainting.jpg
+    img_inpainting_mask.png
 ```
 
 ## 文件作用
@@ -65,7 +80,7 @@ Inpainting/
 |---|---|
 | `README.md` | 项目说明文档，包含数据结构、文件作用、安装、训练、推理、评估和部署命令。 |
 | `requirements.txt` | 项目依赖列表，包括 `diffusers`、`transformers`、`peft`、`accelerate`、`gradio`、`torch` 等。 |
-| `app.py` | Hugging Face Space / Gradio 应用入口。用户上传受损图和 mask 后，调用修复 pipeline，输出修复图；同时暴露 `/restore` API。 |
+| `app.py` | Hugging Face Space / Gradio 应用入口。用户上传受损图和可选 mask 后，调用修复 pipeline，输出修复图；同时暴露 `/restore` API。 |
 | `.gitignore` | 忽略缓存、模型权重、输出图、训练数据等大文件，但保留必要目录结构。 |
 
 ### `src/` 代码文件
@@ -74,6 +89,7 @@ Inpainting/
 |---|---|
 | `src/pipeline.py` | 推理核心。封装 `StableDiffusionInpaintPipeline`，负责加载 Hugging Face inpainting 模型、加载 LoRA、处理 prompt、mask、seed，并输出修复图。主要类是 `AncientPaintingInpainter`。 |
 | `src/infer_sd_lora.py` | 命令行推理脚本。支持单张图片修复，也支持批量处理 `input_dir + mask_dir`。 |
+| `src/tile_infer.py` | Stable Diffusion 瓦片推理脚本，用于长图或高分辨率图像。支持手动 mask 和自动 mask。 |
 | `src/auto_mask.py` | 自动 mask 生成模块。只给一张破损图时，使用亮度异常、暗色污渍、白色划痕、局部边缘等图像处理规则估计需要修复的区域。 |
 | `src/train_lora.py` | 古画风格 LoRA 训练脚本。使用 `data/lora_train/images` 和 `data/lora_train/captions`，让模型学习古画纹理、纸张质感、笔触风格。 |
 | `src/train_inpaint_lora.py` | 成对修复微调脚本。使用 `data/train/clean`、`data/train/damaged`、`data/train/mask`。默认训练 LoRA；传入 `--train_mode full_unet` 时，可以微调整个 UNet。 |
@@ -85,6 +101,19 @@ Inpainting/
 | `src/build_refine_dataset.py` | 二阶段微调用。把第一阶段模型输出的修复图作为新的 damaged/input，再和 clean 原图、mask 组成 refine 数据集。 |
 | `src/hesclip_lora.py` | 参考 HesClip 项目的 LoRA 低秩线性层实现，体现“冻结主模型，只训练 LoRA A/B 参数”的思想。实际 Diffusers 训练主要使用 PEFT/Diffusers 原生 LoRA 保存格式。 |
 | `src/__init__.py` | 让 `src` 成为 Python 包，支持 `python -m src.xxx` 方式运行脚本。 |
+
+### `src/pconv/` baseline 文件
+
+| 文件 | 作用 |
+|---|---|
+| `src/pconv/partialconv2d.py` | Partial Convolution 基础层。 |
+| `src/pconv/pconv_unet.py` | PConv-UNet 网络结构。 |
+| `src/pconv/lora_conv.py` | 给卷积层加入 LoRA 分支，并冻结基础卷积权重。 |
+| `src/pconv/datasets.py` | 读取 `clean / damaged / mask` 成对数据，并把项目 mask 转换成 PConv 所需的 valid mask。 |
+| `src/pconv/train_pconv_lora.py` | PConv-LoRA 微调入口。 |
+| `src/pconv/infer_pconv_lora.py` | PConv 或 PConv-LoRA 推理入口。 |
+| `src/pconv/tile_pconv.py` | PConv-LoRA 瓦片推理入口，适合长图或高分辨率图像。 |
+| `src/pconv/utils.py` | checkpoint、保存图像、loss、PSNR、设备选择等工具函数。 |
 
 ### 数据和输出目录
 
@@ -100,6 +129,7 @@ Inpainting/
 | `data/val/mask` | 验证集 mask。 |
 | `checkpoints/` | 保存训练得到的 LoRA 权重或完整微调模型。 |
 | `outputs/` | 保存推理结果、评价指标、对比图等输出。 |
+| `test/` | 保存示例测试图和对应 mask，用于演示瓦片推理等流程。 |
 
 ## 安装依赖
 
@@ -212,6 +242,31 @@ ancient Chinese painting, restore damaged areas, preserve original style,
 natural texture, aged paper, traditional brush strokes
 ```
 
+### Stable Diffusion 瓦片推理
+
+当输入图像较长或分辨率较高时，可以使用瓦片推理降低显存压力：
+
+```bash
+python -m src.tile_infer \
+  --model_id runwayml/stable-diffusion-inpainting \
+  --image test/img_inpainting.jpg \
+  --mask test/img_inpainting_mask.png \
+  --output outputs/sd_lora/tile_result.png \
+  --patch_size 512 \
+  --overlap 64
+```
+
+如果没有 mask，可以使用自动 mask：
+
+```bash
+python -m src.tile_infer \
+  --model_id runwayml/stable-diffusion-inpainting \
+  --image test/img_inpainting.jpg \
+  --mask_mode auto \
+  --auto_mask_output outputs/auto_mask/img_inpainting_mask.png \
+  --output outputs/sd_lora/tile_result.png
+```
+
 ## 训练古画风格 LoRA
 
 该步骤只需要古画图片和 caption，不需要 damaged-clean 成对数据。
@@ -318,16 +373,146 @@ accelerate launch -m src.train_inpaint_lora \
 
 此时 `data/refine/damaged` 实际存放的是上一轮模型输出的修复图，`data/refine/clean` 仍然是原始 clean 图。
 
+## PConv / PConv-LoRA baseline
+
+PConv baseline 用于和 Stable Diffusion Inpainting / SD-LoRA 进行对比。它沿用本项目的数据格式：
+
+```text
+data/train/clean
+data/train/damaged
+data/train/mask
+data/val/clean
+data/val/damaged
+data/val/mask
+```
+
+项目 mask 约定是：
+
+```text
+255：需要修复区域
+0：正常区域
+```
+
+PConv 内部需要的是 valid mask：
+
+```text
+1：有效区域
+0：缺失区域
+```
+
+代码中会自动转换：
+
+```text
+damage_mask = mask / 255
+valid_mask = 1 - damage_mask
+```
+
+### 准备 PConv 预训练权重
+
+PConv-LoRA 需要先准备 PConv / PConv-UNet 预训练权重，例如：
+
+```text
+models/pconv/pconv.pth
+```
+
+注意：PConv 权重不能和 Stable Diffusion 权重混用。如果 checkpoint 出现大量 missing/unexpected keys，说明权重结构和当前 `PConvUNet` 不匹配，需要做 key 映射或调整网络结构。
+
+### PConv-LoRA smoke test
+
+正式训练前建议先跑 1 个 epoch，确认数据、权重和流程可用：
+
+```bash
+python -m src.pconv.train_pconv_lora \
+  --train_root data/train \
+  --val_root data/val \
+  --pretrained_pconv models/pconv/pconv.pth \
+  --output_dir checkpoints/pconv_lora_smoke \
+  --resolution 512 \
+  --batch_size 1 \
+  --epochs 1 \
+  --rank 4 \
+  --learning_rate 1e-4
+```
+
+### 正式训练 PConv-LoRA
+
+```bash
+python -m src.pconv.train_pconv_lora \
+  --train_root data/train \
+  --val_root data/val \
+  --pretrained_pconv models/pconv/pconv.pth \
+  --output_dir checkpoints/pconv_lora \
+  --resolution 512 \
+  --batch_size 1 \
+  --epochs 10 \
+  --rank 8 \
+  --learning_rate 1e-4
+```
+
+输出：
+
+```text
+checkpoints/pconv_lora/
+  best.pth
+  latest.pth
+  history.json
+```
+
+### PConv-LoRA 推理
+
+```bash
+python -m src.pconv.infer_pconv_lora \
+  --input_dir data/val/damaged \
+  --mask_dir data/val/mask \
+  --checkpoint checkpoints/pconv_lora/best.pth \
+  --output_dir outputs/pconv_lora \
+  --resolution 512
+```
+
+如果只想运行未加 LoRA 的 PConv baseline，可以传入 `--pretrained_pconv`：
+
+```bash
+python -m src.pconv.infer_pconv_lora \
+  --input_dir data/val/damaged \
+  --mask_dir data/val/mask \
+  --pretrained_pconv models/pconv/pconv.pth \
+  --output_dir outputs/pconv \
+  --resolution 512
+```
+
+### PConv 瓦片推理
+
+```bash
+python -m src.pconv.tile_pconv \
+  --image test/img_inpainting.jpg \
+  --mask test/img_inpainting_mask.png \
+  --checkpoint checkpoints/pconv_lora/best.pth \
+  --output outputs/pconv_lora/tile_result.png \
+  --patch_size 512 \
+  --overlap 64
+```
+
+也可以让 PConv 瓦片推理自动生成 mask：
+
+```bash
+python -m src.pconv.tile_pconv \
+  --image test/img_inpainting.jpg \
+  --mask_mode auto \
+  --auto_mask_output outputs/auto_mask/img_inpainting_mask.png \
+  --checkpoint checkpoints/pconv_lora/best.pth \
+  --output outputs/pconv_lora/tile_result.png
+```
+
 ## 评价指标
 
-在有 clean 参考图的验证集上，可以计算 PSNR 和 SSIM：
+在有 clean 参考图的验证集上，可以计算 PSNR、SSIM、masked PSNR，并生成逐图 CSV：
 
 ```bash
 python -m src.metrics \
   --pred_dir outputs/sd_lora \
   --clean_dir data/val/clean \
   --mask_dir data/val/mask \
-  --output outputs/metrics.json
+  --output outputs/metrics/sd_lora_metrics.json
 ```
 
 输出包括：
@@ -335,8 +520,47 @@ python -m src.metrics \
 - `psnr`：整张图的 PSNR
 - `ssim`：整张图的 SSIM
 - `masked_psnr`：只在 mask 区域计算的 PSNR
+- `mask_ratio`：mask 面积占比
+- `*_detail.csv`：每张图的详细指标
 
 如果测试图没有 clean 参考图，则不能严格计算 PSNR / SSIM，只能做视觉质量分析。
+
+### 指标计算 + 样本可视化
+
+```bash
+python -m src.metrics \
+  --pred_dir outputs/sd_lora \
+  --clean_dir data/val/clean \
+  --mask_dir data/val/mask \
+  --damaged_dir data/val/damaged \
+  --output outputs/metrics/sd_lora_metrics.json \
+  --detail_csv outputs/metrics/sd_lora_metrics_detail.csv \
+  --vis_dir outputs/vis/sd_lora \
+  --top_k 5
+```
+
+输出目录中会保存 `best / middle / worst` 样本拼图。每张拼图包含：
+
+```text
+clean | damaged | mask | result | error
+```
+
+### 多方法对比
+
+当已经得到 SD-LoRA 和 PConv-LoRA 的逐图 CSV 后，可以统一生成对比图：
+
+```bash
+python -m src.metrics \
+  --compare_csv SD-LoRA=outputs/metrics/sd_lora_metrics_detail.csv \
+  --compare_csv PConv-LoRA=outputs/metrics/pconv_lora_metrics_detail.csv \
+  --compare_pred_dir SD-LoRA=outputs/sd_lora \
+  --compare_pred_dir PConv-LoRA=outputs/pconv_lora \
+  --clean_dir data/val/clean \
+  --damaged_dir data/val/damaged \
+  --mask_dir data/val/mask \
+  --vis_dir outputs/vis/compare \
+  --top_k 5
+```
 
 ## Hugging Face Space 部署
 
@@ -391,7 +615,9 @@ print(result)
 6. 运行 `src.metrics` 在有 clean 参考的验证集上计算指标。
 7. 使用 `src.train_inpaint_lora` 进一步做 paired inpainting 微调。
 8. 可选：使用 `outputs/sd_lora` 和 clean 原图继续 refine。
+9. 准备 PConv 预训练权重，运行 `src.pconv.train_pconv_lora` 和 `src.pconv.infer_pconv_lora` 得到 baseline。
+10. 使用 `src.metrics` 对 SD-LoRA 和 PConv-LoRA 做统一指标与可视化对比。
 
 ## 说明
 
-本项目没有从零训练 Stable Diffusion，而是在 Hugging Face 预训练 inpainting 模型的基础上进行 LoRA 适配和可选 UNet 微调。这样更符合课程项目的计算资源限制，也能体现完整的深度学习训练、推理和评估流程。
+本项目没有从零训练 Stable Diffusion，而是在 Hugging Face 预训练 inpainting 模型的基础上进行 LoRA 适配和可选 UNet 微调。PConv baseline 是独立 CNN/U-Net 路线，不能使用 Stable Diffusion 权重。这样的设计更符合课程项目的计算资源限制，也能体现完整的深度学习训练、推理、baseline 对比和评估流程。

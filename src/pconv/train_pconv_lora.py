@@ -48,6 +48,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient_clip", type=float, default=1.0)
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--strict_pretrained", action="store_true")
+    parser.add_argument(
+        "--allow_random_base",
+        action="store_true",
+        help="Allow training LoRA on a randomly initialized frozen PConv base. This is only useful for debugging.",
+    )
     return parser.parse_args()
 
 
@@ -79,8 +84,13 @@ def make_model(args: argparse.Namespace, device: torch.device) -> PConvUNet:
         info = load_state_dict_flexible(model, args.pretrained_pconv, strict=args.strict_pretrained)
         print(f"Loaded pretrained PConv from {args.pretrained_pconv}")
         print(f"Missing keys: {len(info['missing_keys'])}, unexpected keys: {len(info['unexpected_keys'])}")
+    elif not args.allow_random_base:
+        raise ValueError(
+            "--pretrained_pconv is required for PConv-LoRA training. "
+            "Use --allow_random_base only for smoke-testing code paths."
+        )
     else:
-        print("Warning: --pretrained_pconv was not provided. LoRA will be trained on a random frozen base model.")
+        print("Warning: training LoRA on a random frozen PConv base model.")
     result = apply_lora_to_model(
         model,
         rank=args.rank,

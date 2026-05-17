@@ -137,11 +137,11 @@ def main():
             result_np = np.array(result).astype(np.float32)
             orig_np = np.array(patch_img).astype(np.float32)
             alpha = (patch_mask_np.astype(np.float32) / 255.0)[..., None]
-            alpha = np.clip(alpha * win, 0.0, 1.0)
+            alpha = np.clip(alpha, 0.0, 1.0)
             mixed_np = orig_np * (1.0 - alpha) + result_np * alpha
 
-            accum[y:y+ph, x:x+pw] += mixed_np
-            weight[y:y+ph, x:x+pw] += 1.0
+            accum[y:y+ph, x:x+pw] += mixed_np * win
+            weight[y:y+ph, x:x+pw] += win
 
     output_np = accum / np.clip(weight, 1e-6, None)
     output_np = np.clip(output_np, 0, 255).astype(np.uint8)
