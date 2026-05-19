@@ -89,7 +89,7 @@ Inpainting/
 |---|---|
 | `src/pipeline.py` | 推理核心。封装 `StableDiffusionInpaintPipeline`，负责加载 Hugging Face inpainting 模型、加载 LoRA、处理 prompt、mask、seed，并输出修复图。主要类是 `AncientPaintingInpainter`。 |
 | `src/infer_sd_lora.py` | 命令行推理脚本。支持单张图片修复，也支持批量处理 `input_dir + mask_dir`。 |
-| `src/tile_infer.py` | Stable Diffusion 瓦片推理脚本，用于长图或高分辨率图像。支持手动 mask 和自动 mask。 |
+| `src/tile_infer.py` | Stable Diffusion 瓦片推理脚本，用于适配长方形古画、长卷图像或高宽比例较大的输入图像。支持手动 mask 和自动 mask。 |
 | `src/auto_mask.py` | 自动 mask 生成模块。只给一张破损图时，使用亮度异常、暗色污渍、白色划痕、局部边缘等图像处理规则估计需要修复的区域。 |
 | `src/train_lora.py` | 古画风格 LoRA 训练脚本。使用 `data/lora_train/images` 和 `data/lora_train/captions`，让模型学习古画纹理、纸张质感、笔触风格。 |
 | `src/train_inpaint_lora.py` | 成对修复微调脚本。使用 `data/train/clean`、`data/train/damaged`、`data/train/mask`。默认训练 LoRA；传入 `--train_mode full_unet` 时，可以微调整个 UNet。 |
@@ -112,7 +112,7 @@ Inpainting/
 | `src/pconv/datasets.py` | 读取 `clean / damaged / mask` 成对数据，并把项目 mask 转换成 PConv 所需的 valid mask。 |
 | `src/pconv/train_pconv_lora.py` | PConv-LoRA 微调入口。 |
 | `src/pconv/infer_pconv_lora.py` | PConv 或 PConv-LoRA 推理入口。 |
-| `src/pconv/tile_pconv.py` | PConv-LoRA 瓦片推理入口，适合长图或高分辨率图像。 |
+| `src/pconv/tile_pconv.py` | PConv-LoRA 瓦片推理入口，适合长方形古画、长卷图像或高宽比例较大的输入图像。 |
 | `src/pconv/utils.py` | checkpoint、保存图像、loss、PSNR、设备选择等工具函数。 |
 
 ### 数据和输出目录
@@ -244,7 +244,11 @@ natural texture, aged paper, traditional brush strokes
 
 ### Stable Diffusion 瓦片推理
 
-当输入图像较长或分辨率较高时，可以使用瓦片推理降低显存压力：
+本项目保留并改造了瓦片推理，用于适配长方形古画、长卷图像或高宽比例较大的输入图像。它不是因为模型只能处理正方形图片，也不是单纯为了节省显存，而是为了避免把长方形古画强行缩放到固定尺寸时造成比例变化、细节损失或局部纹理不自然。
+
+瓦片推理的做法是：按照宽度和高度方向把原图和 mask 同步切分为多个带重叠区域的小块 patch，分别送入 Stable Diffusion Inpainting 修复，最后再按原始位置拼回完整图像，并在重叠区域做平滑融合。这样可以尽量保留原图比例和局部细节，更适合古画长卷、横幅图像等非正方形输入。
+
+对于普通尺寸图片，可以直接使用 `src.infer_sd_lora`；对于长方形大图或长卷图像，推荐使用 `src.tile_infer`：
 
 ```bash
 python -m src.tile_infer \
@@ -481,6 +485,8 @@ python -m src.pconv.infer_pconv_lora \
 ```
 
 ### PConv 瓦片推理
+
+PConv 瓦片推理与 Stable Diffusion 瓦片推理的定位类似，主要用于处理长方形古画、长卷图像或高宽比例较大的输入图像。它会把原图和 mask 同步切分成多个重叠 patch，分别使用 PConv/PConv-LoRA 修复，再融合回原图尺寸，从而减少直接缩放长方形图像带来的比例和细节损失。
 
 ```bash
 python -m src.pconv.tile_pconv \
